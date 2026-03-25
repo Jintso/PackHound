@@ -21,6 +21,12 @@ fn main() {
 
     let app = adw::Application::builder().application_id(APP_ID).build();
 
+    app.connect_startup(|_| {
+        // Use AdwStyleManager instead of the deprecated gtk-application-prefer-dark-theme.
+        // This follows the system color scheme automatically.
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
+    });
+
     app.connect_activate(ui::window::build_ui);
     app.run();
 }

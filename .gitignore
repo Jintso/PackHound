@@ -1,2 +1,4 @@
 /target
+/tools
+*.AppImage
 brain/.obsidian/workspace.json

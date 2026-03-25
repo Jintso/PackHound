@@ -1,5 +1,9 @@
 # PackHound
 
+<p align="center">
+  <img src="assets/packhound-logo.png" alt="PackHound logo" width="300">
+</p>
+
 A native GTK4/libadwaita GUI for managing World of Warcraft addons on Linux.
 Download and update addons from GitHub releases and CurseForge — for all WoW versions.
 
@@ -23,7 +27,30 @@ Download and update addons from GitHub releases and CurseForge — for all WoW v
 - **Auto-detection** of Wine, Lutris, Bottles, and Heroic Game Launcher WoW installations
 - **Manual path configuration** with per-flavor overrides
 
-## Requirements
+## Install (AppImage)
+
+Download the latest `PackHound-*-x86_64.AppImage` from the
+[Releases](https://github.com/Jintso/PackHound/releases) page, make it
+executable, and run:
+
+```sh
+chmod +x PackHound-*-x86_64.AppImage
+./PackHound-*-x86_64.AppImage
+```
+
+### Runtime dependencies
+
+The AppImage requires GTK4 and libadwaita on your system:
+
+| Distro | Install command |
+|--------|----------------|
+| Arch / CachyOS | `sudo pacman -S gtk4 libadwaita` |
+| Fedora | `sudo dnf install gtk4 libadwaita` |
+| Ubuntu / Debian (23.10+) | `sudo apt install libgtk-4-1 libadwaita-1-0` |
+
+## Build from source
+
+### Requirements
 
 - Rust (stable toolchain)
 - GTK4 ≥ 4.12
@@ -32,23 +59,20 @@ Download and update addons from GitHub releases and CurseForge — for all WoW v
 
 On Arch/CachyOS: `sudo pacman -S gtk4 libadwaita pkgconf`
 
-## Build & Run
+### Build & Run
 
 ```sh
 cargo build --release
 ./target/release/addon-manager
 ```
 
-## Install
+### Install manually
 
 ```sh
-# Build
 cargo build --release
 
-# Copy binary
 install -Dm755 target/release/addon-manager ~/.local/bin/addon-manager
 
-# Install .desktop file
 install -Dm644 com.github.packhound.desktop \
     ~/.local/share/applications/com.github.packhound.desktop
 ```
