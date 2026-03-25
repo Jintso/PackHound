@@ -1,0 +1,22 @@
+[package]
+name = "addon-manager"
+version = "1.0.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "PackHound — Manage World of Warcraft addons on Linux with a native GTK4 GUI"
+
+[dependencies]
+gtk4 = { version = "0.9", features = ["v4_12"] }
+libadwaita = { version = "0.7", features = ["v1_4"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+zip = "2"
+dirs = "5"
+anyhow = "1"
+futures-util = "0.3"
+tempfile = "3"
+
+[dev-dependencies]

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=PackHound
+Comment=PackHound — Manage World of Warcraft addons on Linux
+Exec=addon-manager
+Icon=package-x-generic
+Terminal=false
+Type=Application
+Categories=Game;Utility;
+Keywords=wow;warcraft;addon;
