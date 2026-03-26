@@ -34,8 +34,8 @@ cargo build --release
 # Strip the binary
 echo ""
 echo "=== Stripping binary ==="
-strip "$PROJECT_DIR/target/release/addon-manager"
-ls -lh "$PROJECT_DIR/target/release/addon-manager"
+strip "$PROJECT_DIR/target/release/packhound"
+ls -lh "$PROJECT_DIR/target/release/packhound"
 
 # Build AppDir
 echo ""
@@ -47,7 +47,7 @@ mkdir -p "$APPDIR/usr/share/applications"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
 # Binary
-cp "$PROJECT_DIR/target/release/addon-manager" "$APPDIR/usr/bin/"
+cp "$PROJECT_DIR/target/release/packhound" "$APPDIR/usr/bin/"
 
 # Desktop file
 cp "$PROJECT_DIR/${APP_ID}.desktop" "$APPDIR/"
@@ -61,7 +61,7 @@ cp "$ASSETS_DIR/${APP_ID}.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/${A
 cat > "$APPDIR/AppRun" << 'EOF'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "$0")")"
-exec "$HERE/usr/bin/addon-manager" "$@"
+exec "$HERE/usr/bin/packhound" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 

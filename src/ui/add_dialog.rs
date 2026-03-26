@@ -198,7 +198,7 @@ async fn run_install_github(
     status_label.set_text(&format!("Downloading {}…", asset.name));
 
     let http = reqwest::Client::builder()
-        .user_agent(concat!("addon-manager/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("packhound/", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     let total_size = asset.size;
@@ -286,7 +286,7 @@ async fn run_install_curseforge(
     progress_bar.pulse();
 
     let http = reqwest::Client::builder()
-        .user_agent(concat!("addon-manager/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("packhound/", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     let pb = progress_bar.clone();

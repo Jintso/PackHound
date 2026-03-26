@@ -97,7 +97,7 @@ impl Default for AddonRegistry {
 
 fn registry_path() -> Result<PathBuf> {
     let dir = dirs::config_dir().context("Could not determine config directory")?;
-    Ok(dir.join("addon-manager").join(REGISTRY_FILE))
+    Ok(dir.join("packhound").join(REGISTRY_FILE))
 }
 
 #[cfg(test)]

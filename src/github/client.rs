@@ -3,7 +3,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::Deserialize;
 
 const GITHUB_API: &str = "https://api.github.com";
-const APP_USER_AGENT: &str = concat!("addon-manager/", env!("CARGO_PKG_VERSION"));
+const APP_USER_AGENT: &str = concat!("packhound/", env!("CARGO_PKG_VERSION"));
 
 /// A GitHub release with its downloadable assets.
 #[derive(Debug, Clone)]

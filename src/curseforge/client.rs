@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::addon::WowFlavor;
 
 const CF_API: &str = "https://api.curseforge.com";
-const APP_USER_AGENT: &str = concat!("addon-manager/", env!("CARGO_PKG_VERSION"));
+const APP_USER_AGENT: &str = concat!("packhound/", env!("CARGO_PKG_VERSION"));
 
 /// WoW's game ID on CurseForge. This is a well-known constant.
 const WOW_GAME_ID: u32 = 1;

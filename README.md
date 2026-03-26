@@ -63,7 +63,7 @@ On Arch/CachyOS: `sudo pacman -S gtk4 libadwaita pkgconf`
 
 ```sh
 cargo build --release
-./target/release/addon-manager
+./target/release/packhound
 ```
 
 ### Install manually
@@ -71,7 +71,7 @@ cargo build --release
 ```sh
 cargo build --release
 
-install -Dm755 target/release/addon-manager ~/.local/bin/addon-manager
+install -Dm755 target/release/packhound ~/.local/bin/packhound
 
 install -Dm644 com.github.packhound.desktop \
     ~/.local/share/applications/com.github.packhound.desktop
@@ -79,7 +79,7 @@ install -Dm644 com.github.packhound.desktop \
 
 ## Configuration
 
-Config is stored in `~/.config/addon-manager/`:
+Config is stored in `~/.config/packhound/`:
 - `config.toml` — WoW root path, optional GitHub token, and CurseForge API key
 - `addons.json` — installed addon registry
 

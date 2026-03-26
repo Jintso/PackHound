@@ -1,6 +1,6 @@
 [package]
-name = "addon-manager"
-version = "1.0.0"
+name = "packhound"
+version = "1.1.0"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "PackHound — Manage World of Warcraft addons on Linux with a native GTK4 GUI"

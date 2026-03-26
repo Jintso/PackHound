@@ -11,6 +11,11 @@ use libadwaita as adw;
 const APP_ID: &str = "com.github.packhound";
 
 fn main() {
+    // Migrate config directory from addon-manager → packhound if needed.
+    if let Err(e) = config::migrate_config_dir() {
+        eprintln!("Warning: config migration failed: {e}");
+    }
+
     // A Tokio runtime must be active for reqwest (Hyper DNS) to work, even
     // when HTTP calls are awaited on the GLib main loop via spawn_future_local.
     let rt = tokio::runtime::Builder::new_multi_thread()

@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=PackHound
 Comment=PackHound — Manage World of Warcraft addons on Linux
-Exec=addon-manager
+Exec=packhound
 Icon=com.github.packhound
 Terminal=false
 Type=Application

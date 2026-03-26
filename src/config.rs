@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::addon::WowFlavor;
 
-const CONFIG_DIR: &str = "addon-manager";
+const CONFIG_DIR: &str = "packhound";
+const OLD_CONFIG_DIR: &str = "addon-manager";
 const CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -60,10 +61,33 @@ impl Config {
     }
 }
 
-/// Returns `~/.config/addon-manager/config.toml`.
+/// Returns `~/.config/packhound/config.toml`.
 fn config_path() -> Result<PathBuf> {
     let dir = dirs::config_dir().context("Could not determine config directory")?;
     Ok(dir.join(CONFIG_DIR).join(CONFIG_FILE))
+}
+
+/// Migrate config directory from `~/.config/addon-manager/` to `~/.config/packhound/`
+/// if the old directory exists and the new one does not.
+pub fn migrate_config_dir() -> Result<()> {
+    let base = dirs::config_dir().context("Could not determine config directory")?;
+    let old_dir = base.join(OLD_CONFIG_DIR);
+    let new_dir = base.join(CONFIG_DIR);
+    if old_dir.exists() && !new_dir.exists() {
+        std::fs::rename(&old_dir, &new_dir).with_context(|| {
+            format!(
+                "Failed to migrate config from {} to {}",
+                old_dir.display(),
+                new_dir.display()
+            )
+        })?;
+        eprintln!(
+            "Migrated config: {} → {}",
+            old_dir.display(),
+            new_dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// Returns true if the given path looks like a WoW installation root
