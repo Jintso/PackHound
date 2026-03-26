@@ -3,8 +3,9 @@
 # Run once, or re-run to update to latest version.
 set -euo pipefail
 
-TOOLS_DIR="$(cd "$(dirname "$0")/../tools" && pwd)"
+TOOLS_DIR="$(dirname "$0")/../tools"
 mkdir -p "$TOOLS_DIR"
+TOOLS_DIR="$(cd "$TOOLS_DIR" && pwd)"
 
 echo "Downloading appimagetool to $TOOLS_DIR ..."
 
