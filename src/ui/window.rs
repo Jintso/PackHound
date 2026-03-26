@@ -7,7 +7,7 @@ use super::{add_dialog, settings};
 use crate::{
     addon::{AddonSource, AddonState, WowFlavor, registry::AddonRegistry},
     config::Config,
-    update::check_all_updates,
+    update::{check_all_updates, check_app_update},
 };
 
 pub fn build_ui(app: &adw::Application) {
@@ -194,7 +194,32 @@ pub fn build_ui(app: &adw::Application) {
 
     window.present();
 
-    // ── Auto-check on launch (non-blocking) ──────────────────────────────────
+    // ── Check for app updates (non-blocking) ─────────────────────────────────
+    {
+        let overlay_ref = toast_overlay.clone();
+        gtk::glib::spawn_future_local(async move {
+            let token = Config::load().ok().and_then(|c| c.github_token);
+            if let Ok(Some(update)) = check_app_update(token.as_deref()).await {
+                let toast = adw::Toast::builder()
+                    .title(format!("PackHound {} available", update.version))
+                    .button_label("Download")
+                    .timeout(10)
+                    .build();
+
+                let url = update.release_url;
+                toast.connect_button_clicked(move |_| {
+                    let _ = gtk::gio::AppInfo::launch_default_for_uri(
+                        &url,
+                        gtk::gio::AppLaunchContext::NONE,
+                    );
+                });
+
+                overlay_ref.add_toast(toast);
+            }
+        });
+    }
+
+    // ── Auto-check addons on launch (non-blocking) ───────────────────────────
     {
         let stack_ref = stack.clone();
         let overlay_ref = toast_overlay.clone();

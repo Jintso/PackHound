@@ -7,6 +7,12 @@
 A native GTK4/libadwaita GUI for managing World of Warcraft addons on Linux.
 Download and update addons from GitHub releases and CurseForge — for all WoW versions.
 
+## Screenshots
+
+| Main Window | Preferences |
+|:-----------:|:-----------:|
+| ![Main window showing addon list](assets/screenshot-main.png) | ![Preferences dialog with version info](assets/screenshot-preferences.png) |
+
 ## Features
 
 - **Install addons** from GitHub repository URLs or CurseForge URLs

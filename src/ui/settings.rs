@@ -108,6 +108,17 @@ pub fn show_settings(parent: &adw::ApplicationWindow) {
 
     content.append(&cf_group);
 
+    // About group (version info)
+    let about_group = adw::PreferencesGroup::builder().title("About").build();
+
+    let version_row = adw::ActionRow::builder()
+        .title("Version")
+        .subtitle(env!("CARGO_PKG_VERSION"))
+        .build();
+    about_group.add(&version_row);
+
+    content.append(&about_group);
+
     // ── Layout ───────────────────────────────────────────────────────────────
     // No scroll window — let the content set the window height naturally.
 

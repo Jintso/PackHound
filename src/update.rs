@@ -7,6 +7,9 @@ use crate::{
     github::{client::GitHubClient, parse_repo_url},
 };
 
+const APP_REPO_OWNER: &str = "Jintso";
+const APP_REPO_NAME: &str = "PackHound";
+
 /// Result of an update check cycle.
 pub struct UpdateCheckResult {
     /// Number of addons with updates available.
@@ -117,6 +120,66 @@ pub async fn check_all_updates(token: Option<&str>) -> Result<UpdateCheckResult>
     })
 }
 
+/// Info about an available app update.
+pub struct AppUpdate {
+    /// The new version tag (e.g. "v1.2.0").
+    pub version: String,
+    /// URL to the GitHub release page.
+    pub release_url: String,
+}
+
+/// Check if a newer version of PackHound is available on GitHub.
+///
+/// Compares the latest release tag against `CARGO_PKG_VERSION`. Returns
+/// `Ok(Some(AppUpdate))` if a newer version exists, `Ok(None)` if up to date.
+pub async fn check_app_update(token: Option<&str>) -> Result<Option<AppUpdate>> {
+    let client = GitHubClient::new(token)?;
+    let release = client
+        .fetch_latest_release(APP_REPO_OWNER, APP_REPO_NAME)
+        .await?;
+
+    let remote = release
+        .tag_name
+        .strip_prefix('v')
+        .unwrap_or(&release.tag_name);
+    let local = env!("CARGO_PKG_VERSION");
+
+    if is_newer_version(remote, local) {
+        Ok(Some(AppUpdate {
+            version: release.tag_name.clone(),
+            release_url: format!(
+                "https://github.com/{APP_REPO_OWNER}/{APP_REPO_NAME}/releases/tag/{}",
+                release.tag_name
+            ),
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Returns true if `remote` is a newer semver than `local`.
+///
+/// Compares major.minor.patch numerically. Returns false if either version
+/// can't be parsed (assumes up to date on parse failure).
+fn is_newer_version(remote: &str, local: &str) -> bool {
+    let parse = |v: &str| -> Option<(u32, u32, u32)> {
+        let parts: Vec<&str> = v.split('.').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        Some((
+            parts[0].parse().ok()?,
+            parts[1].parse().ok()?,
+            parts[2].parse().ok()?,
+        ))
+    };
+
+    match (parse(remote), parse(local)) {
+        (Some(r), Some(l)) => r > l,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +212,37 @@ mod tests {
             AddonState::Installed
         };
         assert_eq!(addon.state, AddonState::UpdateAvailable);
+    }
+
+    #[test]
+    fn newer_version_major() {
+        assert!(is_newer_version("2.0.0", "1.1.0"));
+    }
+
+    #[test]
+    fn newer_version_minor() {
+        assert!(is_newer_version("1.2.0", "1.1.0"));
+    }
+
+    #[test]
+    fn newer_version_patch() {
+        assert!(is_newer_version("1.1.1", "1.1.0"));
+    }
+
+    #[test]
+    fn same_version_not_newer() {
+        assert!(!is_newer_version("1.1.0", "1.1.0"));
+    }
+
+    #[test]
+    fn older_version_not_newer() {
+        assert!(!is_newer_version("1.0.0", "1.1.0"));
+    }
+
+    #[test]
+    fn invalid_version_not_newer() {
+        assert!(!is_newer_version("abc", "1.1.0"));
+        assert!(!is_newer_version("1.1.0", "abc"));
     }
 
     #[test]
