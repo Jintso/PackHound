@@ -70,6 +70,8 @@ pub enum AddonState {
     Installing,
     /// Update check in progress.
     CheckingForUpdates,
+    /// Update check failed (e.g. repo not found).
+    CheckError(String),
 }
 
 /// Where an addon is sourced from for downloads and update checks.

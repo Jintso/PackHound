@@ -36,12 +36,30 @@ Download and update addons from GitHub releases and CurseForge — for all WoW v
 ## Install (AppImage)
 
 Download the latest `PackHound-*-x86_64.AppImage` from the
-[Releases](https://github.com/Jintso/PackHound/releases) page, make it
-executable, and run:
+[Releases](https://github.com/Jintso/PackHound/releases) page, move it
+somewhere permanent, and make it executable:
 
 ```sh
-chmod +x PackHound-*-x86_64.AppImage
-./PackHound-*-x86_64.AppImage
+mkdir -p ~/Applications
+mv PackHound-*-x86_64.AppImage ~/Applications/
+chmod +x ~/Applications/PackHound-*-x86_64.AppImage
+```
+
+### Desktop entry
+
+To add PackHound to your application launcher, create a `.desktop` file:
+
+```sh
+cat > ~/.local/share/applications/com.github.packhound.desktop << 'EOF'
+[Desktop Entry]
+Name=PackHound
+Comment=World of Warcraft addon manager for Linux
+Exec=sh -c 'exec ~/Applications/PackHound-*-x86_64.AppImage'
+Icon=packhound
+Terminal=false
+Type=Application
+Categories=Game;Utility;
+EOF
 ```
 
 ### Runtime dependencies

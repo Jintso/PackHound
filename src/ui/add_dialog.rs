@@ -185,7 +185,7 @@ async fn run_install_github(
             "No zip asset found for '{}' in the latest release.",
             flavor.display_name()
         ),
-        AssetSelection::Ambiguous(assets) => pick_asset_via_dialog(parent, assets).await?,
+        AssetSelection::Ambiguous(assets) => pick_asset_via_dialog(&parent, assets).await?,
     };
 
     let addons_dir = config.addons_dir(flavor).ok_or_else(|| {
@@ -331,13 +331,13 @@ async fn run_install_curseforge(
 
 /// Show the asset picker dialog and wait for the user to choose one.
 /// Returns `Err` if the dialog is cancelled.
-async fn pick_asset_via_dialog(
-    parent: adw::Window,
+pub async fn pick_asset_via_dialog(
+    parent: &impl IsA<gtk::Window>,
     assets: Vec<ReleaseAsset>,
 ) -> anyhow::Result<ReleaseAsset> {
     let (tx, rx) = tokio::sync::oneshot::channel::<ReleaseAsset>();
     let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
-    show_asset_picker_dialog(&parent, assets, move |asset| {
+    show_asset_picker_dialog(parent, assets, move |asset| {
         if let Some(tx) = tx.lock().unwrap().take() {
             let _ = tx.send(asset);
         }
@@ -351,7 +351,7 @@ async fn pick_asset_via_dialog(
 /// Show a dialog listing the given zip assets and call `on_picked` when the
 /// user selects one. Used when multiple assets match for a given release.
 pub fn show_asset_picker_dialog(
-    parent: &adw::Window,
+    parent: &impl IsA<gtk::Window>,
     assets: Vec<ReleaseAsset>,
     on_picked: impl Fn(ReleaseAsset) + 'static,
 ) {
@@ -513,7 +513,7 @@ pub fn show_edit_url_dialog(
     addon_name: String,
     flavor: WowFlavor,
     current_url: String,
-    on_saved: impl Fn() + 'static,
+    on_saved: impl Fn() + Clone + 'static,
 ) {
     let dialog = adw::Window::builder()
         .title("Change Source URL")
@@ -558,33 +558,177 @@ pub fn show_edit_url_dialog(
 
     let on_saved = std::sync::Arc::new(on_saved);
     let dialog_ref = dialog.clone();
+    let parent_ref = parent.clone();
     save_button.connect_clicked(move |btn| {
         let new_url = url_row.text().trim().to_string();
         let addon_name = addon_name.clone();
         let flavor = flavor.clone();
         let on_saved = on_saved.clone();
         let dialog_ref = dialog_ref.clone();
+        let parent_ref = parent_ref.clone();
         btn.set_sensitive(false);
 
         gtk::glib::spawn_future_local(async move {
             let new_source = resolve_source_from_url(&new_url, &flavor).await;
+            let has_remote = new_source.has_remote();
             let mut registry = AddonRegistry::load().unwrap_or_default();
             if let Some(a) = registry
                 .addons
                 .iter_mut()
                 .find(|a| a.name == addon_name && a.flavor == flavor)
             {
-                a.source = new_source;
+                a.source = new_source.clone();
+                // Clear any previous error state
+                if matches!(a.state, AddonState::CheckError(_)) {
+                    a.state = AddonState::Installed;
+                }
             }
             if let Err(e) = registry.save() {
                 eprintln!("Failed to save registry: {e}");
             }
-            on_saved();
             dialog_ref.close();
+
+            // Trigger an update check if the new source has a remote URL
+            if has_remote {
+                let token = Config::load().ok().and_then(|c| c.github_token);
+                let result = check_and_update_single(
+                    &addon_name,
+                    &flavor,
+                    &new_source,
+                    token.as_deref(),
+                    &parent_ref,
+                )
+                .await;
+                // Update state in registry based on result
+                let mut registry = AddonRegistry::load().unwrap_or_default();
+                if let Some(a) = registry
+                    .addons
+                    .iter_mut()
+                    .find(|a| a.name == addon_name && a.flavor == flavor)
+                {
+                    match result {
+                        Ok(Some(new_version)) => {
+                            a.installed_version = new_version;
+                            a.state = AddonState::Installed;
+                        }
+                        Ok(None) => {
+                            a.state = AddonState::Installed;
+                        }
+                        Err(e) => {
+                            a.state = AddonState::CheckError(format!("{e}"));
+                        }
+                    }
+                }
+                let _ = registry.save();
+            }
+            on_saved();
         });
     });
 
     dialog.present();
+}
+
+// ── Check & update after URL change ──────────────────────────────────────────
+
+/// Fetch the latest release for an addon and install it if available.
+/// Returns `Ok(Some(version))` if an update was installed, `Ok(None)` if
+/// already up to date, or `Err` on failure.
+async fn check_and_update_single(
+    addon_name: &str,
+    flavor: &WowFlavor,
+    source: &AddonSource,
+    token: Option<&str>,
+    window: &adw::ApplicationWindow,
+) -> anyhow::Result<Option<String>> {
+    let config = Config::load()?;
+    let addons_dir = config
+        .addons_dir(flavor)
+        .ok_or_else(|| anyhow::anyhow!("WoW path not configured for {}", flavor.display_name()))?;
+    let http = reqwest::Client::builder()
+        .user_agent(concat!("packhound/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+
+    match source {
+        AddonSource::GitHub { url } => {
+            let client = GitHubClient::new(token)?;
+            let (owner, repo) = parse_repo_url(url)?;
+            let release = client.fetch_latest_release(&owner, &repo).await?;
+
+            // Check if already on this version
+            let registry = AddonRegistry::load()?;
+            if let Some(a) = registry
+                .addons
+                .iter()
+                .find(|a| a.name == addon_name && a.flavor == *flavor)
+                && a.installed_version == release.tag_name
+            {
+                return Ok(None);
+            }
+
+            let asset = match select_asset_with_hint(&release.assets, flavor, Some(addon_name)) {
+                AssetSelection::Found(a) => a,
+                AssetSelection::Ambiguous(assets) => pick_asset_via_dialog(window, assets).await?,
+                AssetSelection::NotFound => anyhow::bail!(
+                    "No zip asset found for '{}' in the latest release.",
+                    flavor.display_name()
+                ),
+            };
+
+            let tmp = download_to_temp(&http, &asset.download_url, |_, _| {}).await?;
+            let new_folders = extract_addon(tmp.path(), &addons_dir)?;
+
+            let mut registry = AddonRegistry::load()?;
+            if let Some(a) = registry
+                .addons
+                .iter_mut()
+                .find(|a| a.name == addon_name && a.flavor == *flavor)
+            {
+                a.installed_version = release.tag_name.clone();
+                a.release_date = release.published_at;
+                if !new_folders.is_empty() {
+                    a.folders = new_folders;
+                }
+            }
+            registry.save()?;
+            Ok(Some(release.tag_name))
+        }
+        AddonSource::CurseForge { mod_id, .. } => {
+            let cf_api_key = config
+                .curseforge_api_key
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("CurseForge API key not configured"))?;
+            let cf_client = CurseForgeClient::new(cf_api_key)?;
+            let files = cf_client.list_files(*mod_id, Some(flavor)).await?;
+            let file = files
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("No files found on CurseForge"))?;
+
+            let download_url = file.resolve_download_url();
+            let tmp = download_to_temp(&http, &download_url, |_, _| {}).await?;
+            let new_folders = extract_addon(tmp.path(), &addons_dir)?;
+
+            let mut registry = AddonRegistry::load()?;
+            if let Some(a) = registry
+                .addons
+                .iter_mut()
+                .find(|a| a.name == addon_name && a.flavor == *flavor)
+            {
+                a.installed_version = file.display_name.clone();
+                a.source = AddonSource::CurseForge {
+                    mod_id: *mod_id,
+                    file_id: file.id,
+                    url: source.url().unwrap_or("").to_string(),
+                };
+                if !new_folders.is_empty() {
+                    a.folders = new_folders;
+                }
+            }
+            registry.save()?;
+            Ok(Some(file.display_name))
+        }
+        AddonSource::None => Ok(None),
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -108,6 +108,7 @@ pub async fn check_all_updates(token: Option<&str>) -> Result<UpdateCheckResult>
                     }
                 } else {
                     eprintln!("Update check failed for {}: {e}", addon.name);
+                    addon.state = AddonState::CheckError(msg);
                 }
             }
         }

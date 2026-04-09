@@ -292,7 +292,7 @@ fn run_update_all(
 
     gtk::glib::spawn_future_local(async move {
         let token = Config::load().ok().and_then(|c| c.github_token);
-        match do_update_all(token.as_deref()).await {
+        match do_update_all(token.as_deref(), &window).await {
             Ok(n) => {
                 repopulate_stack(&stack, &update_all_btn, &window, &overlay, &hide, &sort);
                 overlay.add_toast(
@@ -318,7 +318,10 @@ fn run_update_all(
     });
 }
 
-async fn do_update_all(token: Option<&str>) -> anyhow::Result<usize> {
+async fn do_update_all(
+    token: Option<&str>,
+    window: &adw::ApplicationWindow,
+) -> anyhow::Result<usize> {
     use crate::{
         addon::installer::{download_to_temp, extract_addon},
         github::{
@@ -366,7 +369,12 @@ async fn do_update_all(token: Option<&str>) -> anyhow::Result<usize> {
                         Some(&addon.name),
                     ) {
                         AssetSelection::Found(a) => a,
-                        _ => anyhow::bail!("No suitable asset for {}", addon.name),
+                        AssetSelection::Ambiguous(assets) => {
+                            add_dialog::pick_asset_via_dialog(window, assets).await?
+                        }
+                        AssetSelection::NotFound => {
+                            anyhow::bail!("No suitable asset for {}", addon.name)
+                        }
                     };
                     let tmp = download_to_temp(&http, &asset.download_url, |_, _| {}).await?;
                     let folders = extract_addon(tmp.path(), &addons_dir)?;
@@ -421,6 +429,7 @@ async fn do_update_single(
     flavor: WowFlavor,
     source: AddonSource,
     token: Option<&str>,
+    window: &adw::ApplicationWindow,
 ) -> anyhow::Result<String> {
     use crate::{
         addon::installer::{download_to_temp, extract_addon},
@@ -447,9 +456,9 @@ async fn do_update_single(
             let release = client.fetch_latest_release(&owner, &repo).await?;
             let asset = match select_asset_with_hint(&release.assets, &flavor, Some(&addon_name)) {
                 AssetSelection::Found(a) => a,
-                AssetSelection::Ambiguous(_) => anyhow::bail!(
-                    "Multiple assets match. Try reinstalling via Add Addon to choose one."
-                ),
+                AssetSelection::Ambiguous(assets) => {
+                    add_dialog::pick_asset_via_dialog(window, assets).await?
+                }
                 AssetSelection::NotFound => anyhow::bail!(
                     "No zip asset found for '{}' in the latest release.",
                     flavor.display_name()
@@ -564,12 +573,18 @@ fn repopulate_stack(
         .filter(|a| !(hide_externals && a.externally_tracked))
         .collect();
 
-    // Sort — updates pending always float to top, then by chosen order
-    let updates_first = |a: &&crate::addon::Addon, b: &&crate::addon::Addon| {
-        let a_up = a.state == AddonState::UpdateAvailable && !a.externally_tracked;
-        let b_up = b.state == AddonState::UpdateAvailable && !b.externally_tracked;
-        b_up.cmp(&a_up)
+    // Sort — errors and updates pending always float to top, then by chosen order
+    let priority = |a: &&crate::addon::Addon| -> u8 {
+        if matches!(a.state, AddonState::CheckError(_)) {
+            0 // errors first
+        } else if a.state == AddonState::UpdateAvailable && !a.externally_tracked {
+            1 // then updates
+        } else {
+            2
+        }
     };
+    let updates_first =
+        |a: &&crate::addon::Addon, b: &&crate::addon::Addon| priority(a).cmp(&priority(b));
     match sort_order.as_str() {
         "az" => addons.sort_by(|a, b| {
             updates_first(a, b).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
@@ -609,10 +624,17 @@ fn repopulate_stack(
         row.set_title(display_name);
         row.set_subtitle(&subtitle);
 
-        // Deps tooltip
-        if let Some(t) = &toc
+        // Error indicator prefix for failed update checks
+        if let AddonState::CheckError(ref msg) = addon.state {
+            let icon = gtk::Label::new(Some("\u{26A0}")); // ⚠
+            icon.add_css_class("error");
+            icon.set_valign(gtk::Align::Center);
+            row.add_prefix(&icon);
+            row.set_tooltip_text(Some(msg));
+        } else if let Some(t) = &toc
             && !t.dependencies.is_empty()
         {
+            // Deps tooltip (only when no error)
             row.set_tooltip_text(Some(&format!("Requires: {}", t.dependencies.join(", "))));
         }
 
@@ -651,8 +673,14 @@ fn repopulate_stack(
                     let sort = sort_ref.clone();
                     gtk::glib::spawn_future_local(async move {
                         let token = Config::load().ok().and_then(|c| c.github_token);
-                        match do_update_single(addon_name.clone(), flavor, source, token.as_deref())
-                            .await
+                        match do_update_single(
+                            addon_name.clone(),
+                            flavor,
+                            source,
+                            token.as_deref(),
+                            &window_cb,
+                        )
+                        .await
                         {
                             Ok(_) => {
                                 repopulate_stack(
@@ -1013,17 +1041,29 @@ fn menu_item(label: &str) -> gtk::Button {
     btn
 }
 
-fn state_label(state: &AddonState) -> gtk::Label {
-    let (text, css_class) = match state {
-        AddonState::Installed => ("Up to date", "success"),
-        AddonState::UpdateAvailable => ("Update available", "warning"),
-        AddonState::Installing => ("Installing…", "accent"),
-        AddonState::CheckingForUpdates => ("Checking…", "dim-label"),
-    };
-    let label = gtk::Label::new(Some(text));
-    label.add_css_class(css_class);
-    label.set_valign(gtk::Align::Center);
-    label
+fn state_label(state: &AddonState) -> gtk::Widget {
+    match state {
+        AddonState::CheckError(msg) => {
+            let label = gtk::Label::new(Some("Error"));
+            label.add_css_class("error");
+            label.set_valign(gtk::Align::Center);
+            label.set_tooltip_text(Some(msg));
+            label.upcast()
+        }
+        _ => {
+            let (text, css_class) = match state {
+                AddonState::Installed => ("Up to date", "success"),
+                AddonState::UpdateAvailable => ("Update available", "warning"),
+                AddonState::Installing => ("Installing…", "accent"),
+                AddonState::CheckingForUpdates => ("Checking…", "dim-label"),
+                AddonState::CheckError(_) => unreachable!(),
+            };
+            let label = gtk::Label::new(Some(text));
+            label.add_css_class(css_class);
+            label.set_valign(gtk::Align::Center);
+            label.upcast()
+        }
+    }
 }
 
 /// Format an ISO 8601 timestamp as `"Mon YYYY"`, e.g. `"Jan 2025"`.
