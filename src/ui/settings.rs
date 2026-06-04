@@ -159,10 +159,12 @@ pub fn show_settings(parent: &adw::ApplicationWindow) {
                     Some(text.to_string())
                 }
             };
+            // Preserve view preferences (and any other fields) not edited here.
             if let Err(e) = (Config {
                 wow_root,
                 github_token,
                 curseforge_api_key,
+                ..Config::load().unwrap_or_default()
             })
             .save()
             {

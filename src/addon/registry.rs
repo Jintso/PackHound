@@ -75,7 +75,7 @@ impl AddonRegistry {
                         let name = entry.file_name().to_string_lossy().to_string();
                         // Skip hidden dirs and Blizzard's own folders
                         if !name.starts_with('.') && !tracked.contains(name.as_str()) {
-                            result.push((flavor.clone(), name));
+                            result.push((*flavor, name));
                         }
                     }
                 }

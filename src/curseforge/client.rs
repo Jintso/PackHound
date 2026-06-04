@@ -13,11 +13,20 @@ const WOW_GAME_ID: u32 = 1;
 /// CurseForge game version type IDs for WoW flavors.
 /// These map to the `gameVersionTypeId` filter on the files endpoint.
 ///
-/// Discovered via `GET /v1/games/1/version-types` and cached here as constants
-/// since they are stable values assigned by CurseForge.
+/// Authoritative source: `GET /v1/games/1/version-types`. Cached here as
+/// constants because they are stable values assigned by CurseForge:
+///   517    WoW Retail                                (slug: game)
+///   67408  WoW Classic                               (the original 2019 vanilla Classic Era)
+///   73246  WoW Burning Crusade Classic               (slug: wow-burning-crusade-classic)
+///   73713  WoW Wrath of the Lich King Classic        (slug: wow-wrath-classic)
+///   77522  WoW Cataclysm Classic                     (slug: wow-cataclysm-classic)
+///   79434  WoW Mists of Pandaria Classic             (slug: wow-mists-of-pandaria-classic)
 const VERSION_TYPE_RETAIL: u32 = 517;
-const VERSION_TYPE_CLASSIC: u32 = 67408;
-const VERSION_TYPE_CLASSIC_ERA: u32 = 73246;
+const VERSION_TYPE_CLASSIC_ERA: u32 = 67408;
+/// `WowFlavor::Classic` represents the progression-Classic line, currently
+/// Mists of Pandaria Classic as of 2026. Update this constant when CurseForge
+/// rolls progression Classic to the next expansion.
+const VERSION_TYPE_CLASSIC_PROGRESSION: u32 = 79434;
 
 /// A CurseForge mod (addon project).
 #[derive(Debug, Clone)]
@@ -207,7 +216,7 @@ impl CurseForgeClient {
 pub fn version_type_id(flavor: &WowFlavor) -> u32 {
     match flavor {
         WowFlavor::Retail => VERSION_TYPE_RETAIL,
-        WowFlavor::Classic => VERSION_TYPE_CLASSIC,
+        WowFlavor::Classic => VERSION_TYPE_CLASSIC_PROGRESSION,
         WowFlavor::ClassicEra => VERSION_TYPE_CLASSIC_ERA,
     }
 }
@@ -347,10 +356,22 @@ mod tests {
     #[test]
     fn version_type_mapping() {
         assert_eq!(version_type_id(&WowFlavor::Retail), VERSION_TYPE_RETAIL);
-        assert_eq!(version_type_id(&WowFlavor::Classic), VERSION_TYPE_CLASSIC);
+        assert_eq!(
+            version_type_id(&WowFlavor::Classic),
+            VERSION_TYPE_CLASSIC_PROGRESSION
+        );
         assert_eq!(
             version_type_id(&WowFlavor::ClassicEra),
             VERSION_TYPE_CLASSIC_ERA
         );
+    }
+
+    #[test]
+    fn version_type_ids_match_curseforge_authoritative_values() {
+        // Sourced from `GET /v1/games/1/version-types`. If CurseForge ever
+        // reassigns these (extremely unlikely), this test will surface it.
+        assert_eq!(VERSION_TYPE_RETAIL, 517);
+        assert_eq!(VERSION_TYPE_CLASSIC_ERA, 67408);
+        assert_eq!(VERSION_TYPE_CLASSIC_PROGRESSION, 79434);
     }
 }

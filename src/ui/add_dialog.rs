@@ -233,7 +233,7 @@ async fn run_install_github(
         name: primary_name.clone(),
         folders: addon_folders,
         source,
-        flavor: flavor.clone(),
+        flavor: *flavor,
         installed_version: release.tag_name,
         latest_version: None,
         release_date: release.published_at,
@@ -317,7 +317,7 @@ async fn run_install_curseforge(
         name: primary_name.clone(),
         folders: addon_folders,
         source,
-        flavor: flavor.clone(),
+        flavor: *flavor,
         installed_version: file.display_name,
         latest_version: None,
         release_date: None,
@@ -466,7 +466,7 @@ pub fn show_track_dialog(
         let url_text = url_row.text().to_string();
         let url = url_text.trim().to_string();
         let folder_name = folder_name.clone();
-        let flavor = flavor.clone();
+        let flavor = flavor;
         let on_tracked = on_tracked.clone();
         let dialog_ref = dialog_ref.clone();
         btn.set_sensitive(false);
@@ -562,7 +562,7 @@ pub fn show_edit_url_dialog(
     save_button.connect_clicked(move |btn| {
         let new_url = url_row.text().trim().to_string();
         let addon_name = addon_name.clone();
-        let flavor = flavor.clone();
+        let flavor = flavor;
         let on_saved = on_saved.clone();
         let dialog_ref = dialog_ref.clone();
         let parent_ref = parent_ref.clone();

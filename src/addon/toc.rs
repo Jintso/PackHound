@@ -20,11 +20,14 @@ pub struct TocInfo {
 pub fn read_toc(addons_dir: &Path, folder_name: &str, flavor: &WowFlavor) -> Option<TocInfo> {
     let addon_dir = addons_dir.join(folder_name);
 
-    // 1. Try the flavor-specific suffix first
+    // 1. Try flavor-specific suffixed TOCs. Authors use both `_` (WoW's
+    //    official convention) and `-` (common alternative) as the separator.
     for suffix in flavor.toc_suffixes() {
-        let path = addon_dir.join(format!("{folder_name}_{suffix}.toc"));
-        if let Some(info) = parse_toc_file(&path) {
-            return Some(info);
+        for sep in ['_', '-'] {
+            let path = addon_dir.join(format!("{folder_name}{sep}{suffix}.toc"));
+            if let Some(info) = parse_toc_file(&path) {
+                return Some(info);
+            }
         }
     }
 
@@ -34,13 +37,14 @@ pub fn read_toc(addons_dir: &Path, folder_name: &str, flavor: &WowFlavor) -> Opt
         return Some(info);
     }
 
-    // 3. Glob for any {Name}_*.toc as last resort
+    // 3. Glob for any {Name}_*.toc or {Name}-*.toc as last resort
     if let Ok(entries) = std::fs::read_dir(&addon_dir) {
-        let prefix = format!("{folder_name}_");
+        let prefix_underscore = format!("{folder_name}_");
+        let prefix_hyphen = format!("{folder_name}-");
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with(&prefix)
+            if (name.starts_with(&prefix_underscore) || name.starts_with(&prefix_hyphen))
                 && name.ends_with(".toc")
                 && let Some(info) = parse_toc_file(&entry.path())
             {
@@ -267,6 +271,62 @@ mod tests {
         let info = read_toc(tmp.path(), "Test", &WowFlavor::Retail).unwrap();
         assert_eq!(info.title.as_deref(), Some("Test Mainline"));
         assert_eq!(info.version.as_deref(), Some("2.0"));
+    }
+
+    #[test]
+    fn reads_hyphen_separated_classic_alias_for_classic_era() {
+        // Questie pattern: `Questie-Classic.toc` for the Vanilla version.
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let addon_dir = tmp.path().join("Questie");
+        fs::create_dir_all(&addon_dir).unwrap();
+        // Plain TOC is some other expansion; we must NOT pick it.
+        fs::write(
+            addon_dir.join("Questie.toc"),
+            "## Title: Questie (Mists)\n## Version: 11.29.0-mists\n",
+        )
+        .unwrap();
+        fs::write(
+            addon_dir.join("Questie-Classic.toc"),
+            "## Title: Questie\n## Version: 11.29.0\n",
+        )
+        .unwrap();
+        fs::write(
+            addon_dir.join("Questie-WOTLKC.toc"),
+            "## Title: Questie (Wrath)\n## Version: 11.29.0-wotlkc\n",
+        )
+        .unwrap();
+
+        let info = read_toc(tmp.path(), "Questie", &WowFlavor::ClassicEra).unwrap();
+        assert_eq!(info.title.as_deref(), Some("Questie"));
+        assert_eq!(info.version.as_deref(), Some("11.29.0"));
+    }
+
+    #[test]
+    fn prefers_underscore_vanilla_over_hyphen_classic() {
+        // If an addon ships both, underscore-Vanilla is WoW's official
+        // suffix and ranks higher than the hyphen-Classic alias.
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let addon_dir = tmp.path().join("DualSuffix");
+        fs::create_dir_all(&addon_dir).unwrap();
+        fs::write(
+            addon_dir.join("DualSuffix_Vanilla.toc"),
+            "## Title: Dual\n## Version: vanilla-canonical\n",
+        )
+        .unwrap();
+        fs::write(
+            addon_dir.join("DualSuffix-Classic.toc"),
+            "## Title: Dual\n## Version: classic-alias\n",
+        )
+        .unwrap();
+
+        let info = read_toc(tmp.path(), "DualSuffix", &WowFlavor::ClassicEra).unwrap();
+        assert_eq!(info.version.as_deref(), Some("vanilla-canonical"));
     }
 
     #[test]

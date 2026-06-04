@@ -70,7 +70,7 @@ fn select_by_flavor(zips: Vec<&ReleaseAsset>, flavor: &WowFlavor) -> AssetSelect
     let mut scored: Vec<(i32, &ReleaseAsset)> =
         zips.iter().map(|a| (score_asset(a, flavor), *a)).collect();
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|s| std::cmp::Reverse(s.0));
 
     let max_score = scored[0].0;
 
@@ -98,23 +98,43 @@ fn select_by_flavor(zips: Vec<&ReleaseAsset>, flavor: &WowFlavor) -> AssetSelect
 }
 
 /// Score an asset filename against a target flavor.
-/// +1 per keyword matching the target flavor, -1 per keyword matching a different flavor.
+///
+/// Two keyword tiers, weighted differently:
+///   - **Unique markers** (e.g. "vanilla", "bcc", "mainline") unambiguously
+///     identify one flavor. A match scores `+2` for that flavor and `-2`
+///     against the others.
+///   - **Shared markers** (currently just "classic") can legitimately mean
+///     either ClassicEra or progression Classic depending on how the addon
+///     author names things. A match scores `+1` for every flavor that lists
+///     it as shared and `0` for the rest — never negative.
+///
+/// This makes `Addon-ClassicEra.zip` (unique) beat `Addon-Classic.zip`
+/// (shared) for a ClassicEra target, while `MoveAny-v1.8.299-classic.zip`
+/// in a release that also has `-bcc`/`-cata`/`-wrath`/`-mists` still wins
+/// for ClassicEra (those expansion suffixes deduct from ClassicEra and the
+/// bare `-classic` is the only one that scores positive).
 fn score_asset(asset: &ReleaseAsset, flavor: &WowFlavor) -> i32 {
     let tokens = filename_tokens(&asset.name);
+    let matches = |kw: &str| tokens.iter().any(|t| t == kw);
 
-    let positive = flavor_keywords(flavor)
+    let unique_self: i32 = unique_flavor_keywords(flavor)
         .iter()
-        .filter(|kw| tokens.iter().any(|t| t == *kw))
+        .filter(|kw| matches(kw))
         .count() as i32;
 
-    let negative = WowFlavor::all()
+    let unique_other: i32 = WowFlavor::all()
         .iter()
         .filter(|f| *f != flavor)
-        .flat_map(|f| flavor_keywords(f).iter())
-        .filter(|kw| tokens.iter().any(|t| t == *kw))
+        .flat_map(|f| unique_flavor_keywords(f).iter())
+        .filter(|kw| matches(kw))
         .count() as i32;
 
-    positive - negative
+    let shared_self: i32 = shared_flavor_keywords(flavor)
+        .iter()
+        .filter(|kw| matches(kw))
+        .count() as i32;
+
+    (unique_self * 2) + shared_self - (unique_other * 2)
 }
 
 /// Split a filename into lowercase tokens on `-`, `_`, `.`, and spaces.
@@ -126,15 +146,15 @@ fn filename_tokens(name: &str) -> Vec<String> {
         .collect()
 }
 
-/// Keywords identifying each WoW flavor in asset filenames.
-fn flavor_keywords(flavor: &WowFlavor) -> &'static [&'static str] {
+/// Keywords that unambiguously identify a single flavor in asset filenames.
+fn unique_flavor_keywords(flavor: &WowFlavor) -> &'static [&'static str] {
     match flavor {
         WowFlavor::Retail => &["retail", "mainline"],
-        // "classicera" handles unhyphenated names like `Addon-ClassicEra.zip`
+        // "classicera" handles unhyphenated names like `Addon-ClassicEra.zip`.
         WowFlavor::ClassicEra => &["vanilla", "era", "classicera"],
-        // Covers all progression-classic naming: cata, wrath, BCC, MoP, generic "classic"
+        // Expansion-specific names for the progression-Classic line. "classic"
+        // is NOT here — it's ambiguous and lives in `shared_flavor_keywords`.
         WowFlavor::Classic => &[
-            "classic",
             "cata",
             "cataclysm",
             "wrath",
@@ -144,6 +164,18 @@ fn flavor_keywords(flavor: &WowFlavor) -> &'static [&'static str] {
             "mop",
             "mists",
         ],
+    }
+}
+
+/// Keywords that may legitimately identify more than one flavor. A match adds
+/// `+1` for each claiming flavor without deducting from the others.
+fn shared_flavor_keywords(flavor: &WowFlavor) -> &'static [&'static str] {
+    match flavor {
+        // "classic" is the bare suffix authors use ambiguously: sometimes for
+        // vanilla Classic Era (Questie, MoveAny) and sometimes as a generic
+        // catch-all for progression Classic when no expansion is specified.
+        WowFlavor::ClassicEra | WowFlavor::Classic => &["classic"],
+        WowFlavor::Retail => &[],
     }
 }
 
@@ -219,6 +251,51 @@ mod tests {
         let assets = vec![asset("Addon-v1.zip"), asset("Addon-v1-extra.zip")];
         let result = select_asset(&assets, &WowFlavor::Retail);
         assert!(matches!(result, AssetSelection::Ambiguous(_)));
+    }
+
+    #[test]
+    fn classic_era_picks_bare_classic_when_release_has_expansion_siblings() {
+        // MoveAny pattern: release contains a zip per progression expansion
+        // plus a bare `-classic` zip (which the author uses to mean vanilla).
+        let assets = vec![
+            asset("MoveAny-v1.8.299-bcc.zip"),
+            asset("MoveAny-v1.8.299-cata.zip"),
+            asset("MoveAny-v1.8.299-classic.zip"),
+            asset("MoveAny-v1.8.299-mists.zip"),
+            asset("MoveAny-v1.8.299-wrath.zip"),
+            asset("MoveAny-v1.8.299.zip"),
+        ];
+        let AssetSelection::Found(a) = select_asset(&assets, &WowFlavor::ClassicEra) else {
+            panic!("expected Found");
+        };
+        assert_eq!(a.name, "MoveAny-v1.8.299-classic.zip");
+    }
+
+    #[test]
+    fn progression_classic_picks_expansion_specific_over_bare_classic() {
+        // For a progression-Classic user on the same MoveAny release, the
+        // expansion-specific siblings outscore the bare `-classic`. With
+        // multiple expansion-specific zips tied, we return Ambiguous so the
+        // user picks which expansion they're on.
+        let assets = vec![
+            asset("MoveAny-v1.8.299-bcc.zip"),
+            asset("MoveAny-v1.8.299-cata.zip"),
+            asset("MoveAny-v1.8.299-classic.zip"),
+            asset("MoveAny-v1.8.299-mists.zip"),
+            asset("MoveAny-v1.8.299-wrath.zip"),
+            asset("MoveAny-v1.8.299.zip"),
+        ];
+        let result = select_asset(&assets, &WowFlavor::Classic);
+        match result {
+            AssetSelection::Ambiguous(picked) => {
+                let names: Vec<_> = picked.iter().map(|a| a.name.as_str()).collect();
+                assert!(names.contains(&"MoveAny-v1.8.299-bcc.zip"));
+                assert!(names.contains(&"MoveAny-v1.8.299-mists.zip"));
+                // The bare `-classic` should NOT be among the tied winners.
+                assert!(!names.contains(&"MoveAny-v1.8.299-classic.zip"));
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
     }
 
     #[test]

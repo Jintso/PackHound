@@ -6,7 +6,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
   contents: write
@@ -62,7 +61,6 @@ jobs:
         run: bash scripts/build-appimage.sh
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: PackHound-*-x86_64.AppImage
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${{ github.ref_name }}" PackHound-*-x86_64.AppImage --generate-notes

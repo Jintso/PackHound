@@ -17,6 +17,17 @@ pub struct Config {
     pub github_token: Option<String>,
     /// CurseForge API key from console.curseforge.com.
     pub curseforge_api_key: Option<String>,
+
+    // ── Persisted view preferences (header toolbar state) ──────────────────────
+    /// Active flavor filter for the addon list; `None` shows all flavors.
+    #[serde(default)]
+    pub flavor_filter: Option<WowFlavor>,
+    /// Sort order for the addon list: `"az"` | `"za"` | `"none"`. `None` ⇒ `"az"`.
+    #[serde(default)]
+    pub sort_order: Option<String>,
+    /// Whether externally-tracked addons are hidden from the list.
+    #[serde(default)]
+    pub hide_externals: bool,
 }
 
 impl Config {
@@ -192,6 +203,9 @@ mod tests {
             wow_root: Some(wow_root.clone()),
             github_token: Some("ghp_testtoken".to_string()),
             curseforge_api_key: Some("cf_testkey".to_string()),
+            flavor_filter: Some(WowFlavor::ClassicEra),
+            sort_order: Some("za".to_string()),
+            hide_externals: true,
         };
 
         let serialized = toml::to_string_pretty(&original).unwrap();
@@ -199,5 +213,22 @@ mod tests {
 
         assert_eq!(decoded.wow_root, Some(wow_root));
         assert_eq!(decoded.github_token, Some("ghp_testtoken".to_string()));
+        assert_eq!(decoded.flavor_filter, Some(WowFlavor::ClassicEra));
+        assert_eq!(decoded.sort_order, Some("za".to_string()));
+        assert!(decoded.hide_externals);
+    }
+
+    #[test]
+    fn deserialize_old_config_defaults_view_prefs() {
+        // A config.toml written before Phase 9 has none of the view-pref fields.
+        let old = r#"
+            github_token = "ghp_legacy"
+        "#;
+        let decoded: Config = toml::from_str(old).unwrap();
+
+        assert_eq!(decoded.github_token, Some("ghp_legacy".to_string()));
+        assert_eq!(decoded.flavor_filter, None);
+        assert_eq!(decoded.sort_order, None);
+        assert!(!decoded.hide_externals);
     }
 }

@@ -79,6 +79,47 @@ pub fn extract_addon(zip_path: &Path, dest_dir: &Path) -> Result<Vec<String>> {
     Ok(top_level.into_iter().collect())
 }
 
+/// Outcome of an `uninstall_folders` call. Folders that existed and were
+/// deleted go into `removed`; folders that were already absent go into
+/// `missing`. A `missing` folder is not an error — uninstall is idempotent.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct UninstallReport {
+    pub removed: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+/// Delete addon folders from `addons_dir`.
+///
+/// Each name in `folders` is joined to `addons_dir` and, if it is a directory,
+/// removed recursively. Names are validated up front: any name containing a
+/// path separator (`/` or `\`) or a `..` component is rejected with an `Err`
+/// before any filesystem operation, guarding against traversal outside
+/// `addons_dir`. A folder that does not exist is recorded in `missing` rather
+/// than failing. The first hard I/O error (e.g. permission denied) returns
+/// `Err`; progress made before it is lost from the report.
+pub fn uninstall_folders(addons_dir: &Path, folders: &[String]) -> Result<UninstallReport> {
+    // Validate every name before touching disk so a bad name aborts the whole op.
+    for name in folders {
+        if name.contains('/') || name.contains('\\') || name.split(['/', '\\']).any(|c| c == "..") {
+            bail!("Unsafe addon folder name: {name}");
+        }
+    }
+
+    let mut report = UninstallReport::default();
+    for name in folders {
+        let path = addons_dir.join(name);
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("Failed to remove {}", path.display()))?;
+            report.removed.push(name.clone());
+        } else {
+            report.missing.push(name.clone());
+        }
+    }
+
+    Ok(report)
+}
+
 /// Join `base` with a zip entry path, rejecting any traversal attempts.
 fn safe_join(base: &Path, zip_path: &str) -> Result<PathBuf> {
     let mut result = base.to_path_buf();
@@ -160,5 +201,81 @@ mod tests {
         let base = Path::new("/dest");
         let result = safe_join(base, "./Addon/./file.lua").unwrap();
         assert_eq!(result, Path::new("/dest/Addon/file.lua"));
+    }
+
+    #[test]
+    fn uninstall_removes_existing_folder() {
+        let dest = TempDir::new().unwrap();
+        std::fs::create_dir(dest.path().join("MyAddon")).unwrap();
+
+        let report = uninstall_folders(dest.path(), &["MyAddon".to_string()]).unwrap();
+
+        assert_eq!(report.removed, vec!["MyAddon".to_string()]);
+        assert!(report.missing.is_empty());
+        assert!(!dest.path().join("MyAddon").exists());
+    }
+
+    #[test]
+    fn uninstall_records_missing_folder() {
+        let dest = TempDir::new().unwrap();
+
+        let report = uninstall_folders(dest.path(), &["Ghost".to_string()]).unwrap();
+
+        assert!(report.removed.is_empty());
+        assert_eq!(report.missing, vec!["Ghost".to_string()]);
+    }
+
+    #[test]
+    fn uninstall_multi_folder() {
+        let dest = TempDir::new().unwrap();
+        for name in ["BigWigs", "BigWigs_Options", "LibStub"] {
+            std::fs::create_dir(dest.path().join(name)).unwrap();
+        }
+
+        let folders = vec![
+            "BigWigs".to_string(),
+            "BigWigs_Options".to_string(),
+            "LibStub".to_string(),
+        ];
+        let report = uninstall_folders(dest.path(), &folders).unwrap();
+
+        assert_eq!(report.removed, folders);
+        assert!(report.missing.is_empty());
+        for name in ["BigWigs", "BigWigs_Options", "LibStub"] {
+            assert!(!dest.path().join(name).exists());
+        }
+    }
+
+    #[test]
+    fn uninstall_rejects_path_traversal() {
+        let dest = TempDir::new().unwrap();
+        // A sibling dir that must survive the rejected call.
+        std::fs::create_dir(dest.path().join("Keep")).unwrap();
+
+        for bad in ["../etc", "..", "a/b", "a\\b"] {
+            let result = uninstall_folders(dest.path(), &[bad.to_string()]);
+            assert!(result.is_err(), "expected rejection for {bad:?}");
+        }
+        assert!(dest.path().join("Keep").exists());
+    }
+
+    #[test]
+    fn uninstall_handles_nested_files() {
+        let dest = TempDir::new().unwrap();
+        let addon = dest.path().join("DeepAddon");
+        std::fs::create_dir_all(addon.join("Libs/Sub")).unwrap();
+        std::fs::File::create(addon.join("DeepAddon.toc"))
+            .unwrap()
+            .write_all(b"## Title: Deep")
+            .unwrap();
+        std::fs::File::create(addon.join("Libs/Sub/lib.lua"))
+            .unwrap()
+            .write_all(b"-- lib")
+            .unwrap();
+
+        let report = uninstall_folders(dest.path(), &["DeepAddon".to_string()]).unwrap();
+
+        assert_eq!(report.removed, vec!["DeepAddon".to_string()]);
+        assert!(!addon.exists());
     }
 }

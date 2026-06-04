@@ -3,9 +3,12 @@ use gtk4 as gtk;
 use gtk4::prelude::*;
 use libadwaita as adw;
 
-use super::{add_dialog, settings};
+use super::{add_dialog, settings, uninstall_dialog};
 use crate::{
-    addon::{AddonSource, AddonState, WowFlavor, registry::AddonRegistry},
+    addon::{
+        AddonSource, AddonState, WowFlavor, installer::uninstall_folders, registry::AddonRegistry,
+        sync::sync_from_disk,
+    },
     config::Config,
     update::{check_all_updates, check_app_update},
 };
@@ -75,9 +78,40 @@ pub fn build_ui(app: &adw::Application) {
     );
     window.add_action(&sort_action);
 
+    // Flavor filter menu button — same popover pattern as the sort menu.
+    let flavor_menu = gtk::gio::Menu::new();
+    flavor_menu.append(Some("All flavors"), Some("win.flavor-filter::all"));
+    flavor_menu.append(Some("Retail"), Some("win.flavor-filter::retail"));
+    flavor_menu.append(Some("Classic Era"), Some("win.flavor-filter::classic_era"));
+    flavor_menu.append(Some("Classic"), Some("win.flavor-filter::classic"));
+
+    let flavor_button = gtk::MenuButton::new();
+    flavor_button.set_icon_name("funnel-symbolic");
+    flavor_button.set_tooltip_text(Some("Filter by WoW flavor"));
+    flavor_button.set_menu_model(Some(&flavor_menu));
+    flavor_button.set_focusable(false);
+
+    // Flavor filter state action — default "all"
+    let flavor_action = gtk::gio::SimpleAction::new_stateful(
+        "flavor-filter",
+        Some(&String::static_variant_type()),
+        &"all".to_variant(),
+    );
+    window.add_action(&flavor_action);
+
+    // Restore persisted view preferences before the first paint so the initial
+    // list already reflects the saved filter / sort / hide state.
+    {
+        let cfg = Config::load().unwrap_or_default();
+        hide_ext_btn.set_active(cfg.hide_externals);
+        sort_action.set_state(&cfg.sort_order.as_deref().unwrap_or("az").to_variant());
+        flavor_action.set_state(&flavor_to_state(cfg.flavor_filter).to_variant());
+    }
+
     header.pack_start(&settings_button);
     header.pack_start(&hide_ext_btn);
     header.pack_start(&sort_button);
+    header.pack_start(&flavor_button);
 
     // ── Main stack ───────────────────────────────────────────────────────────
     let stack = gtk::Stack::new();
@@ -88,6 +122,7 @@ pub fn build_ui(app: &adw::Application) {
         &toast_overlay,
         &hide_ext_btn,
         &sort_action,
+        &flavor_action,
     );
 
     let toolbar_view = adw::ToolbarView::new();
@@ -111,6 +146,7 @@ pub fn build_ui(app: &adw::Application) {
         let update_all_ref = update_all_button.clone();
         let hide_ref = hide_ext_btn.clone();
         let sort_ref = sort_action.clone();
+        let flavor_ref = flavor_action.clone();
         add_button.connect_clicked(move |_| {
             let stack = stack_ref.clone();
             let overlay = overlay_ref.clone();
@@ -118,8 +154,17 @@ pub fn build_ui(app: &adw::Application) {
             let window_cb = window_ref.clone();
             let hide = hide_ref.clone();
             let sort = sort_ref.clone();
+            let flavor = flavor_ref.clone();
             add_dialog::show_add_dialog(&window_ref, move |addon_name| {
-                repopulate_stack(&stack, &update_all, &window_cb, &overlay, &hide, &sort);
+                repopulate_stack(
+                    &stack,
+                    &update_all,
+                    &window_cb,
+                    &overlay,
+                    &hide,
+                    &sort,
+                    &flavor,
+                );
                 overlay.add_toast(
                     adw::Toast::builder()
                         .title(format!("{addon_name} installed successfully"))
@@ -138,6 +183,7 @@ pub fn build_ui(app: &adw::Application) {
         let window_ref = window.clone();
         let hide_ref = hide_ext_btn.clone();
         let sort_ref = sort_action.clone();
+        let flavor_ref = flavor_action.clone();
         update_all_button.connect_clicked(move |btn| {
             run_update_all(
                 btn,
@@ -147,6 +193,7 @@ pub fn build_ui(app: &adw::Application) {
                 &window_ref,
                 &hide_ref,
                 &sort_ref,
+                &flavor_ref,
             );
         });
     }
@@ -159,7 +206,13 @@ pub fn build_ui(app: &adw::Application) {
         let window_ref = window.clone();
         let hide_ref = hide_ext_btn.clone();
         let sort_ref = sort_action.clone();
-        hide_ext_btn.connect_toggled(move |_| {
+        let flavor_ref = flavor_action.clone();
+        hide_ext_btn.connect_toggled(move |btn| {
+            save_view_prefs(
+                btn.is_active(),
+                &action_state_string(&sort_ref, "az"),
+                state_to_flavor(&action_state_string(&flavor_ref, "all")),
+            );
             repopulate_stack(
                 &stack_ref,
                 &update_all_ref,
@@ -167,6 +220,7 @@ pub fn build_ui(app: &adw::Application) {
                 &overlay_ref,
                 &hide_ref,
                 &sort_ref,
+                &flavor_ref,
             );
         });
     }
@@ -177,10 +231,16 @@ pub fn build_ui(app: &adw::Application) {
         let window_ref = window.clone();
         let hide_ref = hide_ext_btn.clone();
         let sort_ref = sort_action.clone();
+        let flavor_ref = flavor_action.clone();
         sort_action.connect_activate(move |action, param| {
             if let Some(val) = param.and_then(|p| p.get::<String>()) {
                 action.set_state(&val.to_variant());
             }
+            save_view_prefs(
+                hide_ref.is_active(),
+                &action_state_string(action, "az"),
+                state_to_flavor(&action_state_string(&flavor_ref, "all")),
+            );
             repopulate_stack(
                 &stack_ref,
                 &update_all_ref,
@@ -188,6 +248,35 @@ pub fn build_ui(app: &adw::Application) {
                 &overlay_ref,
                 &hide_ref,
                 &sort_ref,
+                &flavor_ref,
+            );
+        });
+    }
+    {
+        let stack_ref = stack.clone();
+        let overlay_ref = toast_overlay.clone();
+        let update_all_ref = update_all_button.clone();
+        let window_ref = window.clone();
+        let hide_ref = hide_ext_btn.clone();
+        let sort_ref = sort_action.clone();
+        let flavor_ref = flavor_action.clone();
+        flavor_action.connect_activate(move |action, param| {
+            if let Some(val) = param.and_then(|p| p.get::<String>()) {
+                action.set_state(&val.to_variant());
+            }
+            save_view_prefs(
+                hide_ref.is_active(),
+                &action_state_string(&sort_ref, "az"),
+                state_to_flavor(&action_state_string(action, "all")),
+            );
+            repopulate_stack(
+                &stack_ref,
+                &update_all_ref,
+                &window_ref,
+                &overlay_ref,
+                &hide_ref,
+                &sort_ref,
+                &flavor_ref,
             );
         });
     }
@@ -227,7 +316,37 @@ pub fn build_ui(app: &adw::Application) {
         let window_ref = window.clone();
         let hide_ref = hide_ext_btn.clone();
         let sort_ref = sort_action.clone();
+        let flavor_ref = flavor_action.clone();
         gtk::glib::spawn_future_local(async move {
+            // Reconcile registry against on-disk state before hitting the network.
+            if let Ok(mut registry) = AddonRegistry::load() {
+                let config = Config::load().unwrap_or_default();
+                let report = sync_from_disk(&mut registry, &config);
+                if !report.is_empty() {
+                    if let Err(e) = registry.save() {
+                        eprintln!("Failed to save registry after disk sync: {e}");
+                    }
+                    repopulate_stack(
+                        &stack_ref,
+                        &update_all_ref,
+                        &window_ref,
+                        &overlay_ref,
+                        &hide_ref,
+                        &sort_ref,
+                        &flavor_ref,
+                    );
+                    let title = match (report.updated.len(), report.removed.len()) {
+                        (u, r) if u > 0 && r > 0 => {
+                            format!("Synced {u} addon(s), removed {r} missing")
+                        }
+                        (u, 0) => format!("Synced {u} addon(s) from disk"),
+                        (0, r) => format!("Removed {r} missing addon(s)"),
+                        _ => String::new(),
+                    };
+                    overlay_ref.add_toast(adw::Toast::builder().title(title).timeout(5).build());
+                }
+            }
+
             let token = Config::load().ok().and_then(|c| c.github_token);
             match check_all_updates(token.as_deref()).await {
                 Ok(result) => {
@@ -238,6 +357,7 @@ pub fn build_ui(app: &adw::Application) {
                         &overlay_ref,
                         &hide_ref,
                         &sort_ref,
+                        &flavor_ref,
                     );
                     let n = result.updates_available;
                     if n > 0 {
@@ -273,6 +393,7 @@ pub fn build_ui(app: &adw::Application) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_update_all(
     btn: &gtk::Button,
     stack: &gtk::Stack,
@@ -281,6 +402,7 @@ fn run_update_all(
     window: &adw::ApplicationWindow,
     hide_ext_btn: &gtk::ToggleButton,
     sort_action: &gtk::gio::SimpleAction,
+    flavor_action: &gtk::gio::SimpleAction,
 ) {
     btn.set_sensitive(false);
     let stack = stack.clone();
@@ -289,12 +411,21 @@ fn run_update_all(
     let window = window.clone();
     let hide = hide_ext_btn.clone();
     let sort = sort_action.clone();
+    let flavor = flavor_action.clone();
 
     gtk::glib::spawn_future_local(async move {
         let token = Config::load().ok().and_then(|c| c.github_token);
         match do_update_all(token.as_deref(), &window).await {
             Ok(n) => {
-                repopulate_stack(&stack, &update_all_btn, &window, &overlay, &hide, &sort);
+                repopulate_stack(
+                    &stack,
+                    &update_all_btn,
+                    &window,
+                    &overlay,
+                    &hide,
+                    &sort,
+                    &flavor,
+                );
                 overlay.add_toast(
                     adw::Toast::builder()
                         .title(format!(
@@ -532,6 +663,7 @@ fn repopulate_stack(
     overlay: &adw::ToastOverlay,
     hide_ext_btn: &gtk::ToggleButton,
     sort_action: &gtk::gio::SimpleAction,
+    flavor_action: &gtk::gio::SimpleAction,
 ) {
     while let Some(child) = stack.first_child() {
         stack.remove(&child);
@@ -546,6 +678,11 @@ fn repopulate_stack(
         .state()
         .and_then(|s| s.get::<String>())
         .unwrap_or_else(|| "az".to_string());
+    let flavor_filter = flavor_action
+        .state()
+        .and_then(|s| s.get::<String>())
+        .as_deref()
+        .and_then(state_to_flavor);
 
     let has_updates = registry
         .addons()
@@ -571,6 +708,7 @@ fn repopulate_stack(
         .addons()
         .iter()
         .filter(|a| !(hide_externals && a.externally_tracked))
+        .filter(|a| flavor_filter.is_none_or(|f| a.flavor == f))
         .collect();
 
     // Sort — errors and updates pending always float to top, then by chosen order
@@ -650,7 +788,7 @@ fn repopulate_stack(
 
             {
                 let addon_name = addon.name.clone();
-                let flavor = addon.flavor.clone();
+                let flavor = addon.flavor;
                 let source = addon.source.clone();
                 let stack_ref = stack.clone();
                 let overlay_ref = overlay.clone();
@@ -659,10 +797,11 @@ fn repopulate_stack(
                 let update_btn_ref = update_btn.clone();
                 let hide_ref = hide_ext_btn.clone();
                 let sort_ref = sort_action.clone();
+                let flavor_act_ref = flavor_action.clone();
                 update_btn.connect_clicked(move |_| {
                     update_btn_ref.set_sensitive(false);
                     let addon_name = addon_name.clone();
-                    let flavor = flavor.clone();
+                    let flavor = flavor;
                     let source = source.clone();
                     let stack = stack_ref.clone();
                     let overlay = overlay_ref.clone();
@@ -671,6 +810,7 @@ fn repopulate_stack(
                     let btn = update_btn_ref.clone();
                     let hide = hide_ref.clone();
                     let sort = sort_ref.clone();
+                    let flavor_act = flavor_act_ref.clone();
                     gtk::glib::spawn_future_local(async move {
                         let token = Config::load().ok().and_then(|c| c.github_token);
                         match do_update_single(
@@ -690,6 +830,7 @@ fn repopulate_stack(
                                     &overlay,
                                     &hide,
                                     &sort,
+                                    &flavor_act,
                                 );
                                 overlay.add_toast(
                                     adw::Toast::builder()
@@ -719,7 +860,7 @@ fn repopulate_stack(
         attach_context_menu(
             &row,
             addon.name.clone(),
-            addon.flavor.clone(),
+            addon.flavor,
             addon.source.clone(),
             addon.externally_tracked,
             stack,
@@ -728,6 +869,7 @@ fn repopulate_stack(
             overlay,
             hide_ext_btn,
             sort_action,
+            flavor_action,
         );
 
         list_box.append(&row);
@@ -753,9 +895,10 @@ fn repopulate_stack(
             let update_all_ref = update_all_btn.clone();
             let window_for_cb = window.clone();
             let name_clone = name.clone();
-            let flavor_clone = flavor.clone();
+            let flavor_clone = flavor;
             let hide_ref = hide_ext_btn.clone();
             let sort_ref = sort_action.clone();
+            let flavor_act_ref = flavor_action.clone();
             track_btn.connect_clicked(move |_| {
                 let stack = stack_ref.clone();
                 let overlay = overlay_ref.clone();
@@ -763,11 +906,22 @@ fn repopulate_stack(
                 let win_cb = window_for_cb.clone();
                 let hide = hide_ref.clone();
                 let sort = sort_ref.clone();
+                let flavor_act = flavor_act_ref.clone();
                 add_dialog::show_track_dialog(
                     &window_ref,
                     name_clone.clone(),
-                    flavor_clone.clone(),
-                    move || repopulate_stack(&stack, &update_all, &win_cb, &overlay, &hide, &sort),
+                    flavor_clone,
+                    move || {
+                        repopulate_stack(
+                            &stack,
+                            &update_all,
+                            &win_cb,
+                            &overlay,
+                            &hide,
+                            &sort,
+                            &flavor_act,
+                        )
+                    },
                 );
             });
         }
@@ -776,13 +930,14 @@ fn repopulate_stack(
         attach_untracked_context_menu(
             &row,
             name.clone(),
-            flavor.clone(),
+            flavor,
             stack,
             update_all_btn,
             window,
             overlay,
             hide_ext_btn,
             sort_action,
+            flavor_action,
         );
 
         row.add_suffix(&track_btn);
@@ -821,6 +976,7 @@ fn attach_context_menu(
     overlay: &adw::ToastOverlay,
     hide_ext_btn: &gtk::ToggleButton,
     sort_action: &gtk::gio::SimpleAction,
+    flavor_action: &gtk::gio::SimpleAction,
 ) {
     let popover = gtk::Popover::new();
     let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -851,9 +1007,10 @@ fn attach_context_menu(
         let update_all_ref = update_all_btn.clone();
         let hide_ref = hide_ext_btn.clone();
         let sort_ref = sort_action.clone();
+        let flavor_ref = flavor_action.clone();
         let popover_ref = popover.clone();
         let name = addon_name.clone();
-        let flav = flavor.clone();
+        let flav = flavor;
         let current_url = source.url().unwrap_or("").to_string();
         btn.connect_clicked(move |_| {
             popover_ref.popdown();
@@ -863,12 +1020,23 @@ fn attach_context_menu(
             let win_cb = window_ref.clone();
             let hide = hide_ref.clone();
             let sort = sort_ref.clone();
+            let flavor_act = flavor_ref.clone();
             add_dialog::show_edit_url_dialog(
                 &window_ref,
                 name.clone(),
-                flav.clone(),
+                flav,
                 current_url.clone(),
-                move || repopulate_stack(&stack, &update_all, &win_cb, &overlay, &hide, &sort),
+                move || {
+                    repopulate_stack(
+                        &stack,
+                        &update_all,
+                        &win_cb,
+                        &overlay,
+                        &hide,
+                        &sort,
+                        &flavor_act,
+                    )
+                },
             );
         });
         menu_box.append(&btn);
@@ -888,9 +1056,10 @@ fn attach_context_menu(
         let window_ref = window.clone();
         let hide_ref = hide_ext_btn.clone();
         let sort_ref = sort_action.clone();
+        let flavor_ref = flavor_action.clone();
         let popover_ref = popover.clone();
         let name = addon_name.clone();
-        let flav = flavor.clone();
+        let flav = flavor;
         btn.connect_clicked(move |_| {
             popover_ref.popdown();
             let mut reg = AddonRegistry::load().unwrap_or_default();
@@ -909,12 +1078,103 @@ fn attach_context_menu(
                 &overlay_ref,
                 &hide_ref,
                 &sort_ref,
+                &flavor_ref,
             );
         });
         menu_box.append(&btn);
     }
 
     menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // "Uninstall" — deletes the addon's folder(s) from disk, then drops the entry
+    {
+        let btn = menu_item("Uninstall");
+        btn.add_css_class("error");
+        let stack_ref = stack.clone();
+        let overlay_ref = overlay.clone();
+        let update_all_ref = update_all_btn.clone();
+        let window_ref = window.clone();
+        let hide_ref = hide_ext_btn.clone();
+        let sort_ref = sort_action.clone();
+        let flavor_ref = flavor_action.clone();
+        let popover_ref = popover.clone();
+        let name = addon_name.clone();
+        let flav = flavor;
+        btn.connect_clicked(move |_| {
+            popover_ref.popdown();
+            let stack = stack_ref.clone();
+            let overlay = overlay_ref.clone();
+            let update_all = update_all_ref.clone();
+            let window = window_ref.clone();
+            let hide = hide_ref.clone();
+            let sort = sort_ref.clone();
+            let flavor_act = flavor_ref.clone();
+            let name = name.clone();
+            let flav = flav;
+            gtk::glib::spawn_future_local(async move {
+                // Resolve the folders to delete and the external flag from the
+                // current registry entry; fall back to the row name if absent.
+                let reg = AddonRegistry::load().unwrap_or_default();
+                let (folders, is_external) = match reg
+                    .addons
+                    .iter()
+                    .find(|a| a.name == name && a.flavor == flav)
+                {
+                    Some(a) if !a.folders.is_empty() => (a.folders.clone(), a.externally_tracked),
+                    Some(a) => (vec![name.clone()], a.externally_tracked),
+                    None => (vec![name.clone()], false),
+                };
+
+                // Resolve the AddOns directory for this flavor.
+                let Some(addons_dir) = Config::load().ok().and_then(|c| c.addons_dir(&flav)) else {
+                    overlay.add_toast(
+                        adw::Toast::builder()
+                            .title("Uninstall failed: WoW path not configured")
+                            .timeout(5)
+                            .build(),
+                    );
+                    return;
+                };
+
+                if !uninstall_dialog::confirm_uninstall(&window, &name, &folders, is_external).await
+                {
+                    return;
+                }
+
+                match uninstall_folders(&addons_dir, &folders) {
+                    Ok(_) => {
+                        let mut reg = AddonRegistry::load().unwrap_or_default();
+                        reg.addons.retain(|a| !(a.name == name && a.flavor == flav));
+                        let _ = reg.save();
+                        repopulate_stack(
+                            &stack,
+                            &update_all,
+                            &window,
+                            &overlay,
+                            &hide,
+                            &sort,
+                            &flavor_act,
+                        );
+                        overlay.add_toast(
+                            adw::Toast::builder()
+                                .title(format!("{name} uninstalled"))
+                                .timeout(3)
+                                .build(),
+                        );
+                    }
+                    Err(e) => {
+                        overlay.add_toast(
+                            adw::Toast::builder()
+                                .title(format!("Uninstall failed: {e}"))
+                                .timeout(5)
+                                .build(),
+                        );
+                    }
+                }
+            });
+        });
+        menu_box.append(&btn);
+    }
 
     // "Remove from List"
     {
@@ -926,9 +1186,10 @@ fn attach_context_menu(
         let window_ref = window.clone();
         let hide_ref = hide_ext_btn.clone();
         let sort_ref = sort_action.clone();
+        let flavor_ref = flavor_action.clone();
         let popover_ref = popover.clone();
         let name = addon_name.clone();
-        let flav = flavor.clone();
+        let flav = flavor;
         btn.connect_clicked(move |_| {
             popover_ref.popdown();
             let mut reg = AddonRegistry::load().unwrap_or_default();
@@ -941,6 +1202,7 @@ fn attach_context_menu(
                 &overlay_ref,
                 &hide_ref,
                 &sort_ref,
+                &flavor_ref,
             );
         });
         menu_box.append(&btn);
@@ -977,6 +1239,7 @@ fn attach_untracked_context_menu(
     overlay: &adw::ToastOverlay,
     hide_ext_btn: &gtk::ToggleButton,
     sort_action: &gtk::gio::SimpleAction,
+    flavor_action: &gtk::gio::SimpleAction,
 ) {
     let popover = gtk::Popover::new();
     let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -993,9 +1256,10 @@ fn attach_untracked_context_menu(
         let update_all_ref = update_all_btn.clone();
         let hide_ref = hide_ext_btn.clone();
         let sort_ref = sort_action.clone();
+        let flavor_ref = flavor_action.clone();
         let popover_ref = popover.clone();
         let name = folder_name.clone();
-        let flav = flavor.clone();
+        let flav = flavor;
         btn.connect_clicked(move |_| {
             popover_ref.popdown();
             let stack = stack_ref.clone();
@@ -1004,8 +1268,92 @@ fn attach_untracked_context_menu(
             let win_cb = window_ref.clone();
             let hide = hide_ref.clone();
             let sort = sort_ref.clone();
-            add_dialog::show_track_dialog(&window_ref, name.clone(), flav.clone(), move || {
-                repopulate_stack(&stack, &update_all, &win_cb, &overlay, &hide, &sort)
+            let flavor_act = flavor_ref.clone();
+            add_dialog::show_track_dialog(&window_ref, name.clone(), flav, move || {
+                repopulate_stack(
+                    &stack,
+                    &update_all,
+                    &win_cb,
+                    &overlay,
+                    &hide,
+                    &sort,
+                    &flavor_act,
+                )
+            });
+        });
+        menu_box.append(&btn);
+    }
+
+    menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // "Uninstall" — deletes the untracked folder from disk; no registry change
+    {
+        let btn = menu_item("Uninstall");
+        btn.add_css_class("error");
+        let stack_ref = stack.clone();
+        let overlay_ref = overlay.clone();
+        let update_all_ref = update_all_btn.clone();
+        let window_ref = window.clone();
+        let hide_ref = hide_ext_btn.clone();
+        let sort_ref = sort_action.clone();
+        let flavor_ref = flavor_action.clone();
+        let popover_ref = popover.clone();
+        let name = folder_name.clone();
+        let flav = flavor;
+        btn.connect_clicked(move |_| {
+            popover_ref.popdown();
+            let stack = stack_ref.clone();
+            let overlay = overlay_ref.clone();
+            let update_all = update_all_ref.clone();
+            let window = window_ref.clone();
+            let hide = hide_ref.clone();
+            let sort = sort_ref.clone();
+            let flavor_act = flavor_ref.clone();
+            let name = name.clone();
+            let flav = flav;
+            gtk::glib::spawn_future_local(async move {
+                let Some(addons_dir) = Config::load().ok().and_then(|c| c.addons_dir(&flav)) else {
+                    overlay.add_toast(
+                        adw::Toast::builder()
+                            .title("Uninstall failed: WoW path not configured")
+                            .timeout(5)
+                            .build(),
+                    );
+                    return;
+                };
+
+                let folders = vec![name.clone()];
+                if !uninstall_dialog::confirm_uninstall(&window, &name, &folders, false).await {
+                    return;
+                }
+
+                match uninstall_folders(&addons_dir, &folders) {
+                    Ok(_) => {
+                        repopulate_stack(
+                            &stack,
+                            &update_all,
+                            &window,
+                            &overlay,
+                            &hide,
+                            &sort,
+                            &flavor_act,
+                        );
+                        overlay.add_toast(
+                            adw::Toast::builder()
+                                .title(format!("{name} uninstalled"))
+                                .timeout(3)
+                                .build(),
+                        );
+                    }
+                    Err(e) => {
+                        overlay.add_toast(
+                            adw::Toast::builder()
+                                .title(format!("Uninstall failed: {e}"))
+                                .timeout(5)
+                                .build(),
+                        );
+                    }
+                }
             });
         });
         menu_box.append(&btn);
@@ -1032,6 +1380,52 @@ fn attach_untracked_context_menu(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Map a `win.flavor-filter` action-state string to a flavor (`"all"` ⇒ None).
+fn state_to_flavor(state: &str) -> Option<WowFlavor> {
+    match state {
+        "retail" => Some(WowFlavor::Retail),
+        "classic_era" => Some(WowFlavor::ClassicEra),
+        "classic" => Some(WowFlavor::Classic),
+        _ => None,
+    }
+}
+
+/// Map a saved flavor filter to its `win.flavor-filter` action-state string.
+fn flavor_to_state(flavor: Option<WowFlavor>) -> &'static str {
+    match flavor {
+        Some(WowFlavor::Retail) => "retail",
+        Some(WowFlavor::ClassicEra) => "classic_era",
+        Some(WowFlavor::Classic) => "classic",
+        None => "all",
+    }
+}
+
+/// Read a stateful action's current string state, falling back to `default`.
+fn action_state_string(action: &gtk::gio::SimpleAction, default: &str) -> String {
+    action
+        .state()
+        .and_then(|s| s.get::<String>())
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// Persist the three header view preferences to `config.toml`. Failures are
+/// logged and swallowed — a view-pref write must never crash the app.
+fn save_view_prefs(hide_externals: bool, sort_order: &str, flavor_filter: Option<WowFlavor>) {
+    let mut config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to load config to save view prefs: {e}");
+            return;
+        }
+    };
+    config.hide_externals = hide_externals;
+    config.sort_order = Some(sort_order.to_string());
+    config.flavor_filter = flavor_filter;
+    if let Err(e) = config.save() {
+        eprintln!("Failed to save view prefs: {e}");
+    }
+}
 
 fn menu_item(label: &str) -> gtk::Button {
     let btn = gtk::Button::with_label(label);

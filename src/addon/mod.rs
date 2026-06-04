@@ -1,12 +1,13 @@
 pub mod installer;
 pub mod registry;
+pub mod sync;
 pub mod toc;
 
 use serde::{Deserialize, Serialize};
 
 /// Which WoW game flavor an addon targets.
 /// Maps directly to the on-disk subdirectory under the WoW root.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WowFlavor {
     /// Retail (The War Within and future expansions) → `_retail_/`
@@ -41,13 +42,20 @@ impl WowFlavor {
         &[WowFlavor::Retail, WowFlavor::ClassicEra, WowFlavor::Classic]
     }
 
-    /// `.toc` file suffixes WoW uses for this flavor, in preference order.
-    /// e.g. `ElvUI_Mainline.toc` for Retail.
+    /// `.toc` file suffixes that addon authors use for this flavor, in
+    /// preference order. The reader at `crate::addon::toc::read_toc` tries
+    /// each suffix with both `_` and `-` separators (e.g. `ElvUI_Mainline.toc`
+    /// and `Questie-Classic.toc` both resolve).
     pub fn toc_suffixes(&self) -> &'static [&'static str] {
         match self {
             WowFlavor::Retail => &["Mainline"],
-            WowFlavor::ClassicEra => &["Vanilla"],
-            WowFlavor::Classic => &["Cata", "Mists", "Wrath", "TBC"],
+            // Vanilla is WoW's official suffix; Classic is the common addon-
+            // author alias (e.g. Questie ships `Questie-Classic.toc`).
+            WowFlavor::ClassicEra => &["Vanilla", "Classic"],
+            // Mists is current progression Classic as of 2026; older suffixes
+            // remain as fallbacks. WOTLKC/BCC are alternate spellings seen in
+            // the wild alongside Wrath/TBC.
+            WowFlavor::Classic => &["Mists", "Cata", "Wrath", "WOTLKC", "TBC", "BCC"],
         }
     }
 }
@@ -179,6 +187,49 @@ impl From<AddonRaw> for Addon {
             externally_tracked: raw.externally_tracked,
         }
     }
+}
+
+/// Compare two version strings with tolerance for common format variations.
+///
+/// Recognized as equal:
+///   - Leading `v` / `V` on either side (`v1.2.3` ≡ `1.2.3`). Addon authors
+///     often omit it in `## Version:` while GitHub release tags include it.
+///   - One side being a prefix of the other followed by a separator
+///     (`-`, `_`, ` `, `+`). Covers CurseForge appending build metadata like
+///     `805-1-g90787fb` or a revision letter like `1.0.4 c` while the TOC
+///     keeps just `805` / `1.0.4`.
+///
+/// Not equal when only digits or dots follow the prefix (`1.2.3` ≢ `1.2.30`)
+/// or when both sides carry differing suffix metadata of the same length
+/// (`1.0.4 c` ≢ `1.0.4 d`) — those represent real version differences.
+pub fn versions_equal(a: &str, b: &str) -> bool {
+    fn strip(s: &str) -> &str {
+        s.strip_prefix('v')
+            .or_else(|| s.strip_prefix('V'))
+            .unwrap_or(s)
+    }
+    fn is_metadata_separator(c: char) -> bool {
+        matches!(c, '-' | '_' | ' ' | '+')
+    }
+
+    let a = strip(a);
+    let b = strip(b);
+    if a == b {
+        return true;
+    }
+    let prefix_with_separator = |shorter: &str, longer: &str| -> bool {
+        longer
+            .strip_prefix(shorter)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(is_metadata_separator)
+    };
+    if a.len() < b.len() && prefix_with_separator(a, b) {
+        return true;
+    }
+    if b.len() < a.len() && prefix_with_separator(b, a) {
+        return true;
+    }
+    false
 }
 
 /// Given a list of extracted addon folder names, return the primary folder.
@@ -384,6 +435,58 @@ mod tests {
 
         assert_eq!(AddonSource::None.url(), None);
         assert!(!AddonSource::None.has_remote());
+    }
+
+    #[test]
+    fn versions_equal_matches_v_prefix() {
+        assert!(versions_equal("v143", "143"));
+        assert!(versions_equal("143", "v143"));
+        assert!(versions_equal("V1.2.3", "1.2.3"));
+        assert!(versions_equal("v1.0", "v1.0"));
+        assert!(versions_equal("1.0", "1.0"));
+    }
+
+    #[test]
+    fn versions_equal_rejects_different_versions() {
+        assert!(!versions_equal("v143", "v144"));
+        assert!(!versions_equal("143", "144"));
+        assert!(!versions_equal("v1.2.3", "1.2.4"));
+        assert!(!versions_equal("", "v1.0"));
+    }
+
+    #[test]
+    fn versions_equal_accepts_curseforge_revision_letter() {
+        // Plumber / DialogueUI pattern: space + revision letter.
+        assert!(versions_equal("1.9.2", "1.9.2 d"));
+        assert!(versions_equal("1.0.4 c", "1.0.4"));
+    }
+
+    #[test]
+    fn versions_equal_accepts_git_describe_metadata() {
+        // Baganator pattern: -{commits}-g{shortsha}.
+        assert!(versions_equal("805", "805-1-g90787fb"));
+        assert!(versions_equal("v1.2.3", "1.2.3-4-gabcdef0"));
+    }
+
+    #[test]
+    fn versions_equal_accepts_semver_build_metadata() {
+        assert!(versions_equal("1.2.3", "1.2.3+build.42"));
+        assert!(versions_equal("1.2.3-rc1", "1.2.3"));
+    }
+
+    #[test]
+    fn versions_equal_rejects_same_length_metadata_difference() {
+        // Both sides carry differing curse revision letters → real diff.
+        assert!(!versions_equal("1.0.4 c", "1.0.4 d"));
+        // Differing git-describe metadata → different commit.
+        assert!(!versions_equal("805-1-g90787fb", "805-2-gabcdef0"));
+    }
+
+    #[test]
+    fn versions_equal_rejects_digit_continuation() {
+        // 1.2.3 must not be considered equal to 1.2.30.
+        assert!(!versions_equal("1.2.3", "1.2.30"));
+        assert!(!versions_equal("1.2.30", "1.2.3"));
     }
 
     #[test]

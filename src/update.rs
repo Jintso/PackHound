@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::{
-    addon::{AddonSource, AddonState, registry::AddonRegistry},
+    addon::{AddonSource, AddonState, registry::AddonRegistry, versions_equal},
     config::Config,
     curseforge::client::CurseForgeClient,
     github::{client::GitHubClient, parse_repo_url},
@@ -86,7 +86,7 @@ pub async fn check_all_updates(token: Option<&str>) -> Result<UpdateCheckResult>
 
         match result {
             Ok(latest) => {
-                let has_update = latest != addon.installed_version;
+                let has_update = !versions_equal(&latest, &addon.installed_version);
                 addon.latest_version = Some(latest);
                 addon.state = if has_update {
                     updates_available += 1;
